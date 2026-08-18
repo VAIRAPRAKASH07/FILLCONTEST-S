@@ -36,6 +36,8 @@
     .link-btn{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800;color:var(--primary);background:#eef3ff;padding:7px 10px;border-radius:8px;text-decoration:none}
     .link-btn:hover{background:#dfe8ff}
     .contest-closed{font-size:12px;color:#94a3b8;font-weight:800;background:#f2f4f7;padding:8px 10px;border-radius:8px;text-align:center}
+    .contest-report-toolbar{display:grid;grid-template-columns:minmax(240px,1.1fr) minmax(220px,1fr);gap:12px;align-items:end}
+    .report-summary{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}.report-chip{padding:8px 11px;border-radius:10px;background:#f2f4f7;font-size:12px;font-weight:800;color:#344054}.report-chip.registered{background:#eaf8f0;color:#067647}.report-chip.not-registered{background:#fff0f1;color:#b42318}.report-chip.no-response{background:#fff7e6;color:#a15c00}.report-table .status{white-space:nowrap}.request-edit-card{width:min(980px,100%)}.request-review-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}.request-alert{background:#eef4ff;border:1px solid #cfe0ff;border-radius:14px;padding:14px;position:sticky;top:0}.request-alert .label{font-size:11px;text-transform:uppercase;color:#526581;font-weight:800;margin-bottom:6px}.request-alert .change{font-size:17px;font-weight:800;color:#1d4ed8;word-break:break-word}.request-alert .meta{margin-top:10px;font-size:12px;color:#667085;line-height:1.5}.request-review-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px}.clickable-row{cursor:pointer}.clickable-row:hover{background:#f8faff}.pending-badge{background:#eaf8f0;color:#067647}.review-btn{background:#eef3ff;color:#1d4ed8}@media(max-width:850px){.contest-report-toolbar{grid-template-columns:1fr}.request-review-layout{grid-template-columns:1fr}.request-alert{position:static}}
   </style>
 </head>
 <body>
@@ -70,7 +72,7 @@
   <div id="modal" class="modal hidden"><div class="modal-card"><div class="modal-head"><h3 id="modalTitle">Details</h3><button class="close" onclick="closeModal()">×</button></div><div id="modalBody"></div></div></div>
 
 <script>
-  const state = { token: sessionStorage.getItem('portalToken') || '', type: sessionStorage.getItem('portalType') || '', user: null, currentPage: 'dashboard' };
+  const state = { token: sessionStorage.getItem('portalToken') || '', type: sessionStorage.getItem('portalType') || '', user: null, currentPage: 'dashboard', contestReportRows: [], contestReport: null };
   const $ = id => document.getElementById(id);
   const esc = v => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const fmtDate = v => v ? new Date(v).toLocaleString() : '-';
@@ -498,7 +500,11 @@
   }
 
   async function renderStudents() {
-    const students = await server('getStudents', state.token);
+    const [students, contests] = await Promise.all([
+      server('getStudents', state.token),
+      server('getContests', state.token)
+    ]);
+
     const rows = students.map(s => `
       <tr>
         <td>${esc(s.rollNo)}</td>
@@ -516,11 +522,40 @@
       </tr>
     `).join('');
 
+    const contestOptions = contests.map(c => `<option value="${esc(c.contestId)}">${esc(c.contestName)}${c.status === 'ACTIVE' ? '' : ' (INACTIVE)'}</option>`).join('');
+
     $('mainContent').innerHTML = `
       <div class="page-title">
         <div><h2>Students</h2><p>Manage student records</p></div>
         <button class="btn btn-primary" onclick="openAddStudent()">+ Add Student</button>
       </div>
+
+      <div class="panel">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+          <div>
+            <h3>Contest-wise Student Registration</h3>
+            <p class="muted" style="margin-top:-6px">Select an existing contest to see every student and their registration status.</p>
+          </div>
+        </div>
+        <div class="contest-report-toolbar">
+          <div class="field" style="margin-bottom:0">
+            <label>Contest</label>
+            <select id="contestReportSelect" onchange="loadContestRegistrationReport(this.value)">
+              <option value="">Select contest...</option>
+              ${contestOptions}
+            </select>
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Search Students</label>
+            <input id="contestReportSearch" placeholder="Search roll no, register no or name..." oninput="filterContestRegistrationReport(this.value)">
+          </div>
+        </div>
+        <div id="contestReportSummary" class="report-summary"></div>
+        <div id="contestReportTable" class="table-wrap">
+          <div class="empty">Select a contest to view its student registration list.</div>
+        </div>
+      </div>
+
       <div class="panel">
         <div class="table-wrap">
           <table class="table">
@@ -530,6 +565,64 @@
         </div>
       </div>
     `;
+  }
+
+  function renderContestRegistrationReportRows(rows) {
+    const body = rows.map(s => {
+      const cls = s.status === 'REGISTERED' ? 'active' : s.status === 'NOT REGISTERED' ? 'inactive' : '';
+      return `
+        <tr>
+          <td>${esc(s.rollNo)}</td>
+          <td>${esc(s.regNo)}</td>
+          <td>${esc(s.name)}</td>
+          <td><span class="status ${cls}">${esc(s.statusLabel)}</span></td>
+        </tr>
+      `;
+    }).join('');
+
+    $('contestReportTable').innerHTML = `
+      <table class="table report-table" style="min-width:680px">
+        <thead><tr><th>Roll No</th><th>Reg No</th><th>Name</th><th>Register Status</th></tr></thead>
+        <tbody>${body || '<tr><td colspan="4" class="empty">No students match the search.</td></tr>'}</tbody>
+      </table>
+    `;
+  }
+
+  function filterContestRegistrationReport(searchText) {
+    if (!state.contestReport) return;
+    const q = String(searchText || '').trim().toLowerCase();
+    const rows = !q ? state.contestReportRows : state.contestReportRows.filter(s =>
+      [s.rollNo, s.regNo, s.name, s.classSec].some(v => String(v ?? '').toLowerCase().includes(q))
+    );
+    renderContestRegistrationReportRows(rows);
+  }
+
+  async function loadContestRegistrationReport(contestId) {
+    state.contestReport = null;
+    state.contestReportRows = [];
+    $('contestReportSummary').innerHTML = '';
+    if (!contestId) {
+      $('contestReportTable').innerHTML = '<div class="empty">Select a contest to view its student registration list.</div>';
+      return;
+    }
+
+    showLoader(true);
+    try {
+      const report = await server('getContestRegistrationList', state.token, contestId);
+      state.contestReport = report;
+      state.contestReportRows = report.students || [];
+      $('contestReportSummary').innerHTML = `
+        <span class="report-chip">Total: ${Number(report.totalStudents) || 0}</span>
+        <span class="report-chip registered">Registered: ${Number(report.registeredCount) || 0}</span>
+        <span class="report-chip not-registered">Not Registered: ${Number(report.notRegisteredCount) || 0}</span>
+        <span class="report-chip no-response">No Response: ${Number(report.noResponseCount) || 0}</span>
+      `;
+      renderContestRegistrationReportRows(state.contestReportRows);
+    } catch (err) {
+      $('contestReportTable').innerHTML = `<div class="message error">${esc(err.message)}</div>`;
+    } finally {
+      showLoader(false);
+    }
   }
 
   function openAddStudent() {
@@ -780,12 +873,15 @@
         <td>${esc(r.studentName)}</td>
         <td>${esc(r.type)}</td>
         <td>${esc(r.requestedChange)}</td>
-        <td><span class="status ${r.status === 'pending' ? 'active' : ''}">${esc(r.status)}</span></td>
+        <td><span class="status ${r.status === 'pending' ? 'pending-badge' : ''}">${esc(r.status)}</span></td>
         <td>
           ${r.status === 'pending' ? `
-            <button class="btn btn-success btn-small" onclick="processRequestUI('${esc(r.requestId)}', 'approve')">Approve</button>
-            <button class="btn btn-danger btn-small" onclick="processRequestUI('${esc(r.requestId)}', 'reject')">Reject</button>
-          ` : `${esc(r.authorityResponse)}`}
+            <div class="actions">
+              <button class="btn btn-secondary btn-small review-btn" onclick="openRequestReview('${esc(r.requestId)}')">Review & Edit</button>
+              <button class="btn btn-success btn-small" onclick="processRequestUI('${esc(r.requestId)}', 'approve')">Approve</button>
+              <button class="btn btn-danger btn-small" onclick="processRequestUI('${esc(r.requestId)}', 'reject')">Reject</button>
+            </div>
+          ` : `${esc(r.authorityResponse || '-')}`}
         </td>
       </tr>
     `).join('');
@@ -803,17 +899,132 @@
     `;
   }
 
-  async function processRequestUI(requestId, action) {
-    const response = prompt(`Enter ${action === 'approve' ? 'approval' : 'rejection'} message:`);
+  async function openRequestReview(requestId) {
+    showLoader(true);
+    try {
+      const d = await server('getAuthorityRequestDetails', state.token, requestId);
+      const student = d.student;
+      const request = d.request;
+      const canEdit = request.status === 'pending';
+
+      $('modalTitle').textContent = 'Review Correction Request';
+      $('modalBody').innerHTML = `
+        <div class="request-review-layout">
+          <div>
+            <form onsubmit="saveRequestStudentUI(event, '${esc(request.requestId)}', '${esc(student.regNo)}')">
+              <div class="form-grid">
+                <div class="field"><label>Roll Number</label><input id="requestEditRoll" value="${esc(student.rollNo)}" ${canEdit ? '' : 'disabled'} required></div>
+                <div class="field"><label>Year</label><input id="requestEditYear" value="${esc(student.year)}" ${canEdit ? '' : 'disabled'} required></div>
+                <div class="field"><label>Class/Section</label><input id="requestEditClass" value="${esc(student.classSec)}" ${canEdit ? '' : 'disabled'} required></div>
+                <div class="field"><label>Register Number</label><input id="requestEditReg" value="${esc(student.regNo)}" ${canEdit ? '' : 'disabled'} required></div>
+                <div class="field full-span"><label>Student Name</label><input id="requestEditName" value="${esc(student.name)}" ${canEdit ? '' : 'disabled'} required></div>
+              </div>
+
+              <div class="field" style="margin-top:10px">
+                <label>Authority Response / Note</label>
+                <textarea id="requestAuthorityResponse" style="resize:vertical;min-height:85px" placeholder="Optional note to the student..." ${canEdit ? '' : 'disabled'}></textarea>
+              </div>
+
+              ${canEdit ? `
+                <div class="request-review-actions">
+                  <button type="button" class="btn btn-secondary" onclick="saveRequestStudentOnly('${esc(request.requestId)}', '${esc(student.regNo)}')">Save Changes</button>
+                  <button type="button" class="btn btn-danger" onclick="rejectRequestFromReview('${esc(request.requestId)}')">Reject Request</button>
+                  <button type="submit" class="btn btn-success">Save Changes & Approve</button>
+                </div>
+              ` : `
+                <div class="message info">This request is already ${esc(request.status)}. The student details shown above are the current saved details.</div>
+              `}
+            </form>
+          </div>
+
+          <aside class="request-alert">
+            <div class="label">Requested Change</div>
+            <div class="change">${esc(request.requestedChange)}</div>
+            <div class="meta"><strong>Type:</strong> ${esc(request.type)}<br><strong>Student:</strong> ${esc(request.studentName)}<br><strong>Reason:</strong> ${esc(request.reason || '-')}<br><strong>Submitted:</strong> ${esc(fmtDate(request.date))}</div>
+          </aside>
+        </div>
+      `;
+      $('modal').classList.add('request-edit-modal');
+      $('modal').querySelector('.modal-card').classList.add('request-edit-card');
+      $('modal').classList.remove('hidden');
+    } catch (err) {
+      showMsg(err.message);
+    } finally {
+      showLoader(false);
+    }
+  }
+
+  async function saveRequestStudentUI(e, requestId, originalRegNo) {
+    e.preventDefault();
+    showLoader(true);
+    try {
+      await server('applyCorrectionRequest', state.token, requestId, originalRegNo, {
+        rollNo: $('requestEditRoll').value,
+        year: $('requestEditYear').value,
+        classSec: $('requestEditClass').value,
+        regNo: $('requestEditReg').value,
+        name: $('requestEditName').value
+      }, $('requestAuthorityResponse').value || 'Correction request approved and student details updated.');
+      closeModal();
+      showMsg('Student details updated and request approved!', 'success', 'mainContent');
+      await renderAuthorityRequests();
+    } catch (err) {
+      showMsg(err.message);
+    } finally {
+      showLoader(false);
+    }
+  }
+
+  async function saveRequestStudentOnly(requestId, originalRegNo) {
+    showLoader(true);
+    try {
+      await server('editStudentDetails', state.token, originalRegNo, {
+        rollNo: $('requestEditRoll').value,
+        year: $('requestEditYear').value,
+        classSec: $('requestEditClass').value,
+        regNo: $('requestEditReg').value,
+        name: $('requestEditName').value
+      });
+      closeModal();
+      showMsg('Student details updated. The request remains pending until it is approved or rejected.', 'success', 'mainContent');
+      await renderAuthorityRequests();
+    } catch (err) {
+      showMsg(err.message);
+    } finally {
+      showLoader(false);
+    }
+  }
+
+  async function rejectRequestFromReview(requestId) {
+    const response = $('requestAuthorityResponse')?.value?.trim() || prompt('Enter rejection message:');
     if (!response) return;
     showLoader(true);
     try {
-      if (action === 'approve') {
-        await server('approveRequest', state.token, requestId, response);
-      } else {
-        await server('rejectRequest', state.token, requestId, response);
-      }
-      showMsg(`Request ${action}d successfully!`, 'success', 'mainContent');
+      await server('rejectRequest', state.token, requestId, response);
+      closeModal();
+      showMsg('Request rejected successfully!', 'success', 'mainContent');
+      await renderAuthorityRequests();
+    } catch (err) {
+      showMsg(err.message);
+    } finally {
+      showLoader(false);
+    }
+  }
+
+  async function processRequestUI(requestId, action) {
+    if (action === 'approve') {
+      // Approval now opens the same edit screen so the authority can verify or correct
+      // the student data before approving the request.
+      await openRequestReview(requestId);
+      return;
+    }
+
+    const response = prompt('Enter rejection message:');
+    if (!response) return;
+    showLoader(true);
+    try {
+      await server('rejectRequest', state.token, requestId, response);
+      showMsg('Request rejected successfully!', 'success', 'mainContent');
       await renderAuthorityRequests();
     } catch (err) {
       showMsg(err.message);
@@ -824,6 +1035,9 @@
 
   function closeModal() {
     $('modal').classList.add('hidden');
+    $('modal').classList.remove('request-edit-modal');
+    const card = $('modal').querySelector('.modal-card');
+    if (card) card.classList.remove('request-edit-card');
   }
 
   async function logoutUI() {
